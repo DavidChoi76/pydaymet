@@ -8,7 +8,7 @@ import pygeoogc as ogc
 import pygeoutils as geoutils
 import xarray as xr
 from pygeoogc import MatchCRS, RetrySession, ServiceURL
-from shapely.geometry import Polygon
+from shapely.geometry import MultiPolygon, Polygon
 
 from .exceptions import InvalidInputRange, InvalidInputType, InvalidInputValue, MissingItems
 
@@ -314,7 +314,7 @@ class Daymet:
         clm_ds["time"] = dates
         clm_ds["vp"] *= 1.0e3
 
-        clm_ds = clm_ds.drop_vars(["delta_r", "gamma", "e_def", "rad_n"])
+        clm_ds = clm_ds.drop_vars(["delta_r", "gamma", "e_def", "rad_n", "tmean"])
 
         return clm_ds
 
@@ -393,12 +393,11 @@ def get_byloc(
 
 
 def get_bygeom(
-    geometry: Union[Polygon, Tuple[float, float, float, float]],
+    geometry: Union[Polygon, MultiPolygon, Tuple[float, float, float, float]],
     dates: Union[Tuple[str, str], Union[int, List[int]]],
     geo_crs: str = DEF_CRS,
     variables: Optional[List[str]] = None,
     pet: bool = False,
-    fill_holes: bool = False,
 ) -> xr.Dataset:
     """Gridded data from the Daymet database at 1-km resolution.
 
@@ -406,7 +405,7 @@ def get_bygeom(
 
     Parameters
     ----------
-    geometry : shapely.geometry.Polygon or bbox
+    geometry : Polygon, MultiPolygon, or bbox
         The geometry of the region of interest.
     dates : tuple or list, optional
         Start and end dates as a tuple (start, end) or a list of years [2001, 2010, ...].
@@ -420,8 +419,6 @@ def get_bygeom(
         Whether to compute evapotranspiration based on
         `UN-FAO 56 paper <http://www.fao.org/docrep/X0490E/X0490E00.htm>`__.
         The default is False
-    fill_holes : bool, optional
-        Whether to fill the holes in the geometry's interior, defaults to False.
 
     Returns
     -------
@@ -438,7 +435,6 @@ def get_bygeom(
         raise InvalidInputType("dates", "tuple or list", "(start, end) or [2001, 2010, ...]")
 
     _geometry = geoutils.geo2polygon(geometry, geo_crs, DEF_CRS)
-    _geometry = Polygon(_geometry.exterior) if fill_holes else _geometry
 
     west, south, east, north = _geometry.bounds
     base_url = ServiceURL().restful.daymet_grid
@@ -493,6 +489,7 @@ def get_bygeom(
         ]
     )
     data.attrs["crs"] = crs
+    data.attrs["nodatavals"] = (0.0,)
 
     x_res, y_res = data.x.diff("x").min().item(), data.y.diff("y").min().item()
     # PixelAsArea Convention
@@ -517,6 +514,11 @@ def get_bygeom(
 
     if pet:
         data = daymet.pet_bygrid(data)
+
+    if isinstance(data, xr.Dataset):
+        for v in data:
+            data[v].attrs["crs"] = crs
+            data[v].attrs["nodatavals"] = (0.0,)
 
     return geoutils.xarray_geomask(data, _geometry, DEF_CRS)
 
